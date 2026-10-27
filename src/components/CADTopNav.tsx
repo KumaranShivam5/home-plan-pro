@@ -157,24 +157,24 @@ export const CADTopNav: React.FC<CADTopNavProps> = ({
         </div>
 
         {/* Project File Save & Open */}
-        <div className="flex items-center gap-1 bg-[#090D16] border border-slate-800 rounded p-0.5 shrink-0">
-          <button
-            type="button"
-            onClick={onSaveProject}
-            className="flex items-center gap-1 px-2 py-0.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded transition-colors whitespace-nowrap cursor-pointer"
-            title="Save CAD Project File (.json)"
-          >
-            <Save className="w-3 h-3 text-sky-400" />
-            <span>Save</span>
-          </button>
+        <div className="flex items-center gap-1.5 bg-[#090D16] border border-slate-800 rounded px-1.5 py-1 shrink-0">
           <button
             type="button"
             onClick={onOpenProjectFile}
-            className="flex items-center gap-1 px-2 py-0.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded transition-colors whitespace-nowrap cursor-pointer"
-            title="Open CAD Project File"
+            className="flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-medium text-amber-300 hover:text-amber-200 bg-amber-950/40 hover:bg-amber-950/70 border border-amber-800/60 rounded transition-colors whitespace-nowrap cursor-pointer shadow-xs"
+            title="Open Saved CAD Blueprint Project File (.json) [Ctrl+O]"
           >
-            <FolderOpen className="w-3 h-3 text-amber-400" />
-            <span>Open</span>
+            <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
+            <span>Open File</span>
+          </button>
+          <button
+            type="button"
+            onClick={onSaveProject}
+            className="flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 rounded transition-colors whitespace-nowrap cursor-pointer"
+            title="Save CAD Blueprint File (.json) [Ctrl+S]"
+          >
+            <Save className="w-3.5 h-3.5 text-sky-400" />
+            <span>Save</span>
           </button>
         </div>
 

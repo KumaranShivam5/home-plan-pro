@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Point,
   WallSegment,
@@ -21,7 +21,8 @@ import {
 } from '../utils/cadMath';
 import { SYMBOLS_CATALOG } from '../utils/symbolsCatalog';
 
-import { Copy, RotateCw, Trash2, X } from 'lucide-react';
+import { Copy, RotateCw, Trash2, X, Boxes } from 'lucide-react';
+import { SelectedItem } from '../types/cad';
 
 interface CADCanvasProps {
   walls: WallSegment[];
@@ -33,9 +34,10 @@ interface CADCanvasProps {
   activeTool: CADTool;
   wallThickness: number;
   snapSettings: SnapSettings;
-  selectedId: string | null;
+  selectedItems: SelectedItem[];
   selectedLabel?: string;
-  onSelectElement: (type: 'wall' | 'column' | 'symbol' | 'dimension' | null, id: string | null) => void;
+  onSelectElement: (item: SelectedItem | null, isShiftKey: boolean) => void;
+  onBoxSelectElements: (items: SelectedItem[], isShiftKey: boolean) => void;
   onAddWall: (wall: WallSegment) => void;
   onAddColumn: (column: ColumnElement) => void;
   onAddOpening: (opening: WallOpening) => void;
@@ -49,6 +51,8 @@ interface CADCanvasProps {
   onDuplicateSelected?: () => void;
   onRotateSelected?: () => void;
   onDeleteSelected?: () => void;
+  onGroupSelected?: () => void;
+  onOpenFileDrop?: (file: File) => void;
   zoom: number;
   onZoomChange: (zoom: number) => void;
 }
@@ -63,9 +67,10 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
   activeTool,
   wallThickness,
   snapSettings,
-  selectedId,
+  selectedItems,
   selectedLabel,
   onSelectElement,
+  onBoxSelectElements,
   onAddWall,
   onAddColumn,
   onAddOpening,
@@ -79,6 +84,8 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
   onDuplicateSelected,
   onRotateSelected,
   onDeleteSelected,
+  onGroupSelected,
+  onOpenFileDrop,
   zoom,
   onZoomChange,
 }) => {
@@ -97,6 +104,12 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
 
   // Dragging selected object
   const [draggingItem, setDraggingItem] = useState<{ id: string; type: 'symbol' | 'column'; offset: Point } | null>(null);
+
+  // Set of selected element IDs for fast lookup
+  const selectedIdSet = useMemo(() => new Set(selectedItems.map((i) => i.id)), [selectedItems]);
+  // Box marquee selection in world inches
+  const [boxSelectBox, setBoxSelectBox] = useState<{ start: Point; current: Point } | null>(null);
+  const [isShiftDown, setIsShiftDown] = useState(false);
 
   // Convert client pixel coordinates to blueprint world coordinates (inches)
   const clientToWorld = useCallback(
@@ -251,10 +264,31 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
         onUpdateColumnPosition(draggingItem.id, snappedTarget);
       }
     }
+
+    // Handle box selection drag
+    if (boxSelectBox) {
+      setBoxSelectBox((prev) => (prev ? { ...prev, current: rawWorld } : null));
+    }
   };
 
   // Canvas Mouse Down
   const handleMouseDown = (e: React.MouseEvent) => {
+    // Right-click immediately finishes or stops active wall or dimension drafting!
+    if (e.button === 2) {
+      e.preventDefault();
+      if (wallStartPoint) {
+        setWallStartPoint(null);
+        onCancelActiveDrawing?.('Finished wall chain (Right-click)');
+        return;
+      }
+      if (dimensionStartPoint) {
+        setDimensionStartPoint(null);
+        onCancelActiveDrawing?.('Cancelled dimension (Right-click)');
+        return;
+      }
+      return;
+    }
+
     // Middle click or Pan tool activates pan
     if (e.button === 1 || activeTool === 'pan') {
       setIsPanning(true);
@@ -307,7 +341,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
         layerId: 'structural',
       };
       onAddColumn(newCol);
-      onSelectElement('column', colId);
+      onSelectElement({ type: 'column', id: colId }, false);
       return;
     }
 
@@ -367,44 +401,57 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
       return;
     }
 
-    // 6. SELECT TOOL: Click detection
-    if (activeTool === 'select') {
-      // Check if clicked a column
+    // 6. SELECT OR BOX-SELECT TOOL
+    if (activeTool === 'select' || activeTool === 'box-select') {
+      const isShift = e.shiftKey || isShiftDown;
+
+      // If active tool is explicitly 'box-select', start marquee immediately
+      if (activeTool === 'box-select') {
+        setBoxSelectBox({ start: rawWorld, current: rawWorld });
+        return;
+      }
+
+      // In 'select' tool: check if clicked on any existing elements
+      // Check column
       for (const col of columns) {
         if (
           Math.abs(snappedWorld.x - col.position.x) <= col.width / 2 + 6 &&
           Math.abs(snappedWorld.y - col.position.y) <= col.height / 2 + 6
         ) {
-          onSelectElement('column', col.id);
-          setDraggingItem({
-            id: col.id,
-            type: 'column',
-            offset: { x: snappedWorld.x - col.position.x, y: snappedWorld.y - col.position.y },
-          });
+          onSelectElement({ type: 'column', id: col.id }, isShift);
+          if (!isShift) {
+            setDraggingItem({
+              id: col.id,
+              type: 'column',
+              offset: { x: snappedWorld.x - col.position.x, y: snappedWorld.y - col.position.y },
+            });
+          }
           return;
         }
       }
 
-      // Check if clicked a symbol
+      // Check symbol
       for (const sym of symbols) {
         if (
           Math.abs(snappedWorld.x - sym.position.x) <= sym.width / 2 + 6 &&
           Math.abs(snappedWorld.y - sym.position.y) <= sym.height / 2 + 6
         ) {
-          onSelectElement('symbol', sym.id);
-          setDraggingItem({
-            id: sym.id,
-            type: 'symbol',
-            offset: { x: snappedWorld.x - sym.position.x, y: snappedWorld.y - sym.position.y },
-          });
+          onSelectElement({ type: 'symbol', id: sym.id }, isShift);
+          if (!isShift) {
+            setDraggingItem({
+              id: sym.id,
+              type: 'symbol',
+              offset: { x: snappedWorld.x - sym.position.x, y: snappedWorld.y - sym.position.y },
+            });
+          }
           return;
         }
       }
 
-      // Check if clicked a wall
+      // Check wall
       const wallHit = findClosestWall(snappedWorld, walls, 12);
       if (wallHit) {
-        onSelectElement('wall', wallHit.wall.id);
+        onSelectElement({ type: 'wall', id: wallHit.wall.id }, isShift);
         return;
       }
 
@@ -412,47 +459,132 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
       for (const dim of dimensions) {
         const mid = { x: (dim.start.x + dim.end.x) / 2, y: (dim.start.y + dim.end.y) / 2 };
         if (distance(snappedWorld, mid) < 18) {
-          onSelectElement('dimension', dim.id);
+          onSelectElement({ type: 'dimension', id: dim.id }, isShift);
           return;
         }
       }
 
-      // Clicked empty canvas: deselect
-      onSelectElement(null, null);
+      // Clicked empty canvas: start drag box marquee selection
+      setBoxSelectBox({ start: rawWorld, current: rawWorld });
     }
   };
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (e: React.MouseEvent) => {
     setIsPanning(false);
     if (draggingItem) {
       onFinishDragMove?.(`Moved ${draggingItem.type}`);
       setDraggingItem(null);
     }
+
+    // Process box marquee selection if active
+    if (boxSelectBox) {
+      const minX = Math.min(boxSelectBox.start.x, boxSelectBox.current.x);
+      const maxX = Math.max(boxSelectBox.start.x, boxSelectBox.current.x);
+      const minY = Math.min(boxSelectBox.start.y, boxSelectBox.current.y);
+      const maxY = Math.max(boxSelectBox.start.y, boxSelectBox.current.y);
+
+      const boxWidth = maxX - minX;
+      const boxHeight = maxY - minY;
+
+      if (boxWidth > 6 || boxHeight > 6) {
+        const boxedItems: SelectedItem[] = [];
+
+        // Columns in box
+        for (const col of columns) {
+          if (
+            col.position.x >= minX &&
+            col.position.x <= maxX &&
+            col.position.y >= minY &&
+            col.position.y <= maxY
+          ) {
+            boxedItems.push({ type: 'column', id: col.id });
+          }
+        }
+
+        // Symbols in box
+        for (const sym of symbols) {
+          if (
+            sym.position.x >= minX &&
+            sym.position.x <= maxX &&
+            sym.position.y >= minY &&
+            sym.position.y <= maxY
+          ) {
+            boxedItems.push({ type: 'symbol', id: sym.id });
+          }
+        }
+
+        // Walls in box
+        for (const w of walls) {
+          const midX = (w.start.x + w.end.x) / 2;
+          const midY = (w.start.y + w.end.y) / 2;
+          const inside =
+            (w.start.x >= minX && w.start.x <= maxX && w.start.y >= minY && w.start.y <= maxY) ||
+            (w.end.x >= minX && w.end.x <= maxX && w.end.y >= minY && w.end.y <= maxY) ||
+            (midX >= minX && midX <= maxX && midY >= minY && midY <= maxY);
+          if (inside) {
+            boxedItems.push({ type: 'wall', id: w.id });
+          }
+        }
+
+        // Dimensions in box
+        for (const dim of dimensions) {
+          const midX = (dim.start.x + dim.end.x) / 2;
+          const midY = (dim.start.y + dim.end.y) / 2;
+          if (midX >= minX && midX <= maxX && midY >= minY && midY <= maxY) {
+            boxedItems.push({ type: 'dimension', id: dim.id });
+          }
+        }
+
+        onBoxSelectElements(boxedItems, e.shiftKey || isShiftDown);
+      } else {
+        // Simple click on empty canvas with no drag
+        if (!e.shiftKey && !isShiftDown) {
+          onSelectElement(null, false);
+        }
+      }
+
+      setBoxSelectBox(null);
+    }
   };
 
-  // Keyboard shortcut handler (Escape to stop active wall / cancel drawing)
+  // Track shift key for multi-select
+  useEffect(() => {
+    const handleShift = (e: KeyboardEvent) => {
+      setIsShiftDown(e.shiftKey);
+    };
+    window.addEventListener('keydown', handleShift);
+    window.addEventListener('keyup', handleShift);
+    return () => {
+      window.removeEventListener('keydown', handleShift);
+      window.removeEventListener('keyup', handleShift);
+    };
+  }, []);
+
+  // Keyboard shortcut handler (Escape, Enter, or Space to stop active wall / cancel drawing)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' || e.key === 'Enter' || (e.key === ' ' && (wallStartPoint || dimensionStartPoint))) {
         if (wallStartPoint) {
+          e.preventDefault();
           setWallStartPoint(null);
-          onCancelActiveDrawing?.('Stopped active wall chain');
+          onCancelActiveDrawing?.('Finished / Stopped active wall');
         } else if (dimensionStartPoint) {
+          e.preventDefault();
           setDimensionStartPoint(null);
           onCancelActiveDrawing?.('Cancelled dimension line');
-        } else if (selectedId) {
-          onSelectElement(null, null);
+        } else if (selectedItems.length > 0 && e.key === 'Escape') {
+          onSelectElement(null, false);
           onCancelActiveDrawing?.('Deselected');
-        } else {
-          onCancelActiveDrawing?.('Active tool cancelled');
+        } else if (e.key === 'Escape') {
+          onCancelActiveDrawing?.('Active tool reset to select');
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [wallStartPoint, dimensionStartPoint, selectedId, onCancelActiveDrawing, onSelectElement]);
+  }, [wallStartPoint, dimensionStartPoint, selectedItems, onCancelActiveDrawing, onSelectElement]);
 
-  // HTML5 Drag and Drop from Left Symbol Palette
+  // HTML5 Drag and Drop from Left Symbol Palette & Project File Drops
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
@@ -460,6 +592,17 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
+
+    // 1. Check if user dropped a .json blueprint file onto the canvas to open it!
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      if (file.name.endsWith('.json')) {
+        onOpenFileDrop?.(file);
+        return;
+      }
+    }
+
+    // 2. Otherwise handle symbol drop from palette
     const rawData = e.dataTransfer.getData('application/json');
     if (!rawData) return;
 
@@ -483,7 +626,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
           layerId: 'structural',
         };
         onAddColumn(newCol);
-        onSelectElement('column', newCol.id);
+        onSelectElement({ type: 'column', id: newCol.id }, false);
       } else {
         // Drop as placed fixture/symbol
         const newSym: PlacedSymbol = {
@@ -499,7 +642,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
           layerId: 'fixtures',
         };
         onAddSymbol(newSym);
-        onSelectElement('symbol', newSym.id);
+        onSelectElement({ type: 'symbol', id: newSym.id }, false);
       }
     } catch (err) {
       console.error('Failed to parse drop data:', err);
@@ -516,10 +659,50 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
       onMouseMove={handleMouseMove}
       onMouseDown={handleMouseDown}
       onMouseUp={handleMouseUp}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        if (wallStartPoint) {
+          setWallStartPoint(null);
+          onCancelActiveDrawing?.('Finished wall chain (Right-click)');
+        } else if (dimensionStartPoint) {
+          setDimensionStartPoint(null);
+          onCancelActiveDrawing?.('Cancelled dimension (Right-click)');
+        }
+      }}
+      onDoubleClick={() => {
+        if (wallStartPoint) {
+          setWallStartPoint(null);
+          onCancelActiveDrawing?.('Finished wall chain (Double-click)');
+        }
+      }}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
       className="flex-1 h-full w-full bg-[#0B0F19] relative overflow-hidden cursor-crosshair-cad select-none"
     >
+      {/* Visual Active Wall Guidance Banner with Direct Stop Button */}
+      {wallStartPoint && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-[#111827] border border-sky-500 rounded-full px-4 py-1.5 flex items-center gap-3 shadow-2xl z-30 select-none animate-in fade-in slide-in-from-top-2">
+          <div className="flex items-center gap-2 text-xs text-slate-200">
+            <span className="w-2.5 h-2.5 rounded-full bg-sky-400 animate-pulse" />
+            <span className="font-semibold text-sky-300">Wall in Progress:</span>
+            <span className="text-slate-300">Click endpoint to place · Right-click or Esc to finish</span>
+          </div>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setWallStartPoint(null);
+              onCancelActiveDrawing?.('Stopped wall drawing');
+            }}
+            className="flex items-center gap-1 px-2.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-rose-300 border border-slate-700 rounded-full text-xs font-semibold transition-colors cursor-pointer"
+            title="Stop / Finish Wall Drawing (Esc)"
+          >
+            <X className="w-3.5 h-3.5" />
+            <span>Stop Drawing</span>
+          </button>
+        </div>
+      )}
+
       <svg className="w-full h-full pointer-events-none">
         <defs>
           {/* Minor Grid Pattern (1 foot = 12 inches) */}
@@ -615,7 +798,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
 
           {/* 4. Render Auto-Merged Walls */}
           {wallPolygons.map((wp) => {
-            const isSelected = selectedId === wp.wallId;
+            const isSelected = selectedIdSet.has(wp.wallId);
             const pts = wp.points.map((p) => `${p.x},${p.y}`).join(' ');
 
             return (
@@ -760,7 +943,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
 
           {/* 6. Render Structural Columns */}
           {columns.map((col) => {
-            const isSelected = selectedId === col.id;
+            const isSelected = selectedIdSet.has(col.id);
             return (
               <g
                 key={col.id}
@@ -820,7 +1003,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
 
           {/* 7. Render Placed Symbols & Official Nomenclature Labels */}
           {symbols.map((sym) => {
-            const isSelected = selectedId === sym.id;
+            const isSelected = selectedIdSet.has(sym.id);
             const template = SYMBOLS_CATALOG.find((t) => t.id === sym.type);
 
             return (
@@ -866,7 +1049,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
 
           {/* 8. Render Architectural Dimensions */}
           {dimensions.map((dim) => {
-            const isSelected = selectedId === dim.id;
+            const isSelected = selectedIdSet.has(dim.id);
             const midX = (dim.start.x + dim.end.x) / 2;
             const midY = (dim.start.y + dim.end.y) / 2;
             const d = distance(dim.start, dim.end);
@@ -990,25 +1173,53 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
               />
             </g>
           )}
+          {/* Marquee Box Selection Preview */}
+          {boxSelectBox && (
+            <rect
+              x={Math.min(boxSelectBox.start.x, boxSelectBox.current.x)}
+              y={Math.min(boxSelectBox.start.y, boxSelectBox.current.y)}
+              width={Math.abs(boxSelectBox.current.x - boxSelectBox.start.x)}
+              height={Math.abs(boxSelectBox.current.y - boxSelectBox.start.y)}
+              fill="#38BDF8"
+              fillOpacity="0.12"
+              stroke="#38BDF8"
+              strokeWidth="1.2"
+              strokeDasharray="4 2"
+            />
+          )}
         </g>
       </svg>
 
-      {/* Floating Quick Action HUD Bar for Selected Element */}
-      {selectedId && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#111827] border border-slate-700 rounded-lg px-3 py-1.5 flex items-center gap-2.5 shadow-2xl z-20 font-sans text-xs select-none">
+      {/* Floating Quick Action HUD Bar for Selected Element(s) */}
+      {selectedItems.length > 0 && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#111827] border border-slate-700 rounded-lg px-3 py-1.5 flex items-center gap-2.5 shadow-2xl z-20 font-sans text-xs select-none animate-in fade-in slide-in-from-bottom-2">
           <div className="flex items-center gap-1.5 text-slate-300 font-mono text-[11px] pr-2 border-r border-slate-800">
             <span className="w-2 h-2 rounded-full bg-sky-400" />
-            <span className="font-semibold text-slate-100 max-w-[150px] truncate">
-              {selectedLabel || 'Selected Element'}
+            <span className="font-semibold text-slate-100 max-w-[180px] truncate">
+              {selectedItems.length > 1
+                ? `${selectedItems.length} Elements Selected`
+                : selectedLabel || 'Selected Element'}
             </span>
           </div>
+
+          {selectedItems.length > 1 && onGroupSelected && (
+            <button
+              type="button"
+              onClick={onGroupSelected}
+              className="flex items-center gap-1 text-slate-300 hover:text-white hover:bg-slate-800 px-2 py-1 rounded transition-colors cursor-pointer"
+              title="Group Selected Elements (Ctrl+G)"
+            >
+              <Boxes className="w-3.5 h-3.5 text-sky-400" />
+              <span>Group</span>
+            </button>
+          )}
 
           {onRotateSelected && (
             <button
               type="button"
               onClick={onRotateSelected}
               className="flex items-center gap-1 text-slate-300 hover:text-white hover:bg-slate-800 px-2 py-1 rounded transition-colors cursor-pointer"
-              title="Rotate 45°"
+              title="Rotate 45° (R)"
             >
               <RotateCw className="w-3.5 h-3.5 text-sky-400" />
               <span>Rotate</span>
@@ -1032,16 +1243,16 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
               type="button"
               onClick={onDeleteSelected}
               className="flex items-center gap-1 text-rose-400 hover:text-rose-300 hover:bg-slate-800 px-2 py-1 rounded transition-colors cursor-pointer"
-              title="Delete Element (Del)"
+              title={selectedItems.length > 1 ? `Delete All (${selectedItems.length})` : 'Delete Element (Del)'}
             >
               <Trash2 className="w-3.5 h-3.5" />
-              <span>Delete</span>
+              <span>Delete{selectedItems.length > 1 ? ` (${selectedItems.length})` : ''}</span>
             </button>
           )}
 
           <button
             type="button"
-            onClick={() => onSelectElement(null, null)}
+            onClick={() => onSelectElement(null, false)}
             className="text-slate-400 hover:text-white p-1 hover:bg-slate-800 rounded transition-colors ml-1 cursor-pointer"
             title="Deselect (Esc)"
           >

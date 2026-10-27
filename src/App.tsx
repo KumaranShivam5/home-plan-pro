@@ -21,6 +21,8 @@ import {
   Point,
   DrawingSnapshot,
   SavedProjectFile,
+  SelectedItem,
+  CADGroup,
 } from './types/cad';
 import {
   INITIAL_LAYERS,
@@ -125,7 +127,7 @@ export default function App() {
     setDimensions(target.dimensions);
     setRooms(target.rooms);
     setHistoryIndex(targetIndex);
-    setSelectedElement(null);
+    setSelectedItems([]);
     showToast(`Undo: ${target.actionName || 'Drawing step'}`);
   }, [canUndo, historyIndex, history, showToast]);
 
@@ -143,7 +145,7 @@ export default function App() {
     setDimensions(target.dimensions);
     setRooms(target.rooms);
     setHistoryIndex(targetIndex);
-    setSelectedElement(null);
+    setSelectedItems([]);
     showToast(`Redo: ${target.actionName || 'Drawing step'}`);
   }, [canRedo, historyIndex, history, showToast]);
 
@@ -159,10 +161,29 @@ export default function App() {
 
   // UI Panels State
   const [isSymbolPaletteOpen, setIsSymbolPaletteOpen] = useState(true);
-  const [selectedElement, setSelectedElement] = useState<{
-    type: 'wall' | 'column' | 'symbol' | 'dimension';
-    id: string;
-  } | null>({ type: 'wall', id: initialPlan.walls[0]?.id || '' });
+
+  // Selection & Grouping State (supports single click, Shift+Click, and Box Select)
+  const [selectedItems, setSelectedItems] = useState<SelectedItem[]>([
+    { type: 'wall', id: initialPlan.walls[0]?.id || '' },
+  ]);
+  const [groups, setGroups] = useState<CADGroup[]>([]);
+
+  // Selection counts and breakdown for bulk actions
+  const selectedCount = selectedItems.length;
+
+  const selectedBreakdown = useMemo(() => {
+    const counts = { walls: 0, columns: 0, symbols: 0, dimensions: 0 };
+    selectedItems.forEach((item) => {
+      if (item.type === 'wall') counts.walls++;
+      else if (item.type === 'column') counts.columns++;
+      else if (item.type === 'symbol') counts.symbols++;
+      else if (item.type === 'dimension') counts.dimensions++;
+    });
+    return counts;
+  }, [selectedItems]);
+
+  // Primary selected element for single-item inspector
+  const primarySelected = selectedItems.length === 1 ? selectedItems[0] : null;
 
   // Canvas Viewport & Odometer State
   const [cursorPos, setCursorPos] = useState<Point>({ x: 0, y: 0 });
@@ -176,48 +197,52 @@ export default function App() {
   // Hidden File Input Ref for Project Import
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Computed Properties for selected element
+  // Computed Properties for selected element (single-item inspector)
   const currentSelectedData = useMemo(() => {
-    if (!selectedElement) return null;
-    if (selectedElement.type === 'wall') {
-      const w = walls.find((item) => item.id === selectedElement.id);
+    if (!primarySelected) return null;
+    if (primarySelected.type === 'wall') {
+      const w = walls.find((item) => item.id === primarySelected.id);
       return w ? { type: 'wall' as const, data: w } : null;
     }
-    if (selectedElement.type === 'column') {
-      const c = columns.find((item) => item.id === selectedElement.id);
+    if (primarySelected.type === 'column') {
+      const c = columns.find((item) => item.id === primarySelected.id);
       return c ? { type: 'column' as const, data: c } : null;
     }
-    if (selectedElement.type === 'symbol') {
-      const s = symbols.find((item) => item.id === selectedElement.id);
+    if (primarySelected.type === 'symbol') {
+      const s = symbols.find((item) => item.id === primarySelected.id);
       return s ? { type: 'symbol' as const, data: s } : null;
     }
-    if (selectedElement.type === 'dimension') {
-      const d = dimensions.find((item) => item.id === selectedElement.id);
+    if (primarySelected.type === 'dimension') {
+      const d = dimensions.find((item) => item.id === primarySelected.id);
       return d ? { type: 'dimension' as const, data: d } : null;
     }
     return null;
-  }, [selectedElement, walls, columns, symbols, dimensions]);
+  }, [primarySelected, walls, columns, symbols, dimensions]);
 
   // Label for selected element to show in floating canvas HUD
   const selectedElementLabel = useMemo(() => {
-    if (!selectedElement) return undefined;
-    if (selectedElement.type === 'wall') {
-      const w = walls.find((item) => item.id === selectedElement.id);
+    if (selectedItems.length === 0) return undefined;
+    if (selectedItems.length > 1) {
+      return `${selectedItems.length} Elements Selected (Shift / Marquee)`;
+    }
+    const single = selectedItems[0];
+    if (single.type === 'wall') {
+      const w = walls.find((item) => item.id === single.id);
       return w ? `Wall (${w.thickness}")` : 'Wall';
     }
-    if (selectedElement.type === 'column') {
-      const c = columns.find((item) => item.id === selectedElement.id);
+    if (single.type === 'column') {
+      const c = columns.find((item) => item.id === single.id);
       return c ? `Column ${c.label}` : 'Column';
     }
-    if (selectedElement.type === 'symbol') {
-      const s = symbols.find((item) => item.id === selectedElement.id);
+    if (single.type === 'symbol') {
+      const s = symbols.find((item) => item.id === single.id);
       return s ? s.name : 'Symbol';
     }
-    if (selectedElement.type === 'dimension') {
+    if (single.type === 'dimension') {
       return 'Dimension Line';
     }
     return undefined;
-  }, [selectedElement, walls, columns, symbols]);
+  }, [selectedItems, walls, columns, symbols]);
 
   // Statistics
   const totalWallLength = useMemo(() => {
@@ -230,21 +255,108 @@ export default function App() {
 
   // --- DRAWING ACTION HANDLERS WITH UNDO/REDO REGISTRATION ---
 
-  const handleSelectElement = (
-    type: 'wall' | 'column' | 'symbol' | 'dimension' | null,
-    id: string | null
-  ) => {
-    if (!type || !id) {
-      setSelectedElement(null);
-    } else {
-      setSelectedElement({ type, id });
+  const handleSelectElement = useCallback(
+    (item: SelectedItem | null, isShiftKey: boolean) => {
+      if (!item) {
+        if (!isShiftKey) {
+          setSelectedItems([]);
+        }
+        return;
+      }
+      if (isShiftKey) {
+        setSelectedItems((prev) => {
+          const exists = prev.some((p) => p.id === item.id);
+          if (exists) {
+            return prev.filter((p) => p.id !== item.id);
+          } else {
+            return [...prev, item];
+          }
+        });
+      } else {
+        setSelectedItems([item]);
+      }
+    },
+    []
+  );
+
+  const handleBoxSelectElements = useCallback(
+    (newItems: SelectedItem[], isShiftKey: boolean) => {
+      if (isShiftKey) {
+        setSelectedItems((prev) => {
+          const map = new Map<string, SelectedItem>();
+          prev.forEach((i) => map.set(i.id, i));
+          newItems.forEach((i) => map.set(i.id, i));
+          return Array.from(map.values());
+        });
+      } else {
+        setSelectedItems(newItems);
+      }
+      if (newItems.length > 0) {
+        showToast(`Selected ${newItems.length} element${newItems.length > 1 ? 's' : ''}`);
+      }
+    },
+    [showToast]
+  );
+
+  const handleGroupSelected = useCallback(() => {
+    if (selectedItems.length < 2) {
+      showToast('Select 2 or more elements to group (Shift+Click or Box Select)');
+      return;
     }
+    const newGroup: CADGroup = {
+      id: `grp_${Date.now()}`,
+      name: `Group (${selectedItems.length} items)`,
+      elementIds: selectedItems.map((i) => i.id),
+    };
+    setGroups((prev) => [...prev, newGroup]);
+    showToast(`Created ${newGroup.name}`);
+  }, [selectedItems, showToast]);
+
+  const handleBulkUpdateWallThickness = (thickness: number) => {
+    const wallIds = new Set(selectedItems.filter((i) => i.type === 'wall').map((i) => i.id));
+    if (wallIds.size === 0) return;
+    const nextWalls = walls.map((w) => (wallIds.has(w.id) ? { ...w, thickness } : w));
+    setWalls(nextWalls);
+    pushToHistory(
+      nextWalls,
+      openings,
+      columns,
+      symbols,
+      dimensions,
+      rooms,
+      `Set ${wallIds.size} Walls to ${thickness}"`
+    );
+    showToast(`Updated ${wallIds.size} wall(s) to ${thickness}" thickness`);
+  };
+
+  const handleBulkRotateSelected = () => {
+    const symIds = new Set(selectedItems.filter((i) => i.type === 'symbol').map((i) => i.id));
+    const colIds = new Set(selectedItems.filter((i) => i.type === 'column').map((i) => i.id));
+    if (symIds.size === 0 && colIds.size === 0) return;
+
+    let nextSyms = symbols;
+    let nextCols = columns;
+
+    if (symIds.size > 0) {
+      nextSyms = symbols.map((s) =>
+        symIds.has(s.id) ? { ...s, rotation: (s.rotation + 45) % 360 } : s
+      );
+      setSymbols(nextSyms);
+    }
+    if (colIds.size > 0) {
+      nextCols = columns.map((c) =>
+        colIds.has(c.id) ? { ...c, rotation: (c.rotation + 45) % 360 } : c
+      );
+      setColumns(nextCols);
+    }
+    pushToHistory(walls, openings, nextCols, nextSyms, dimensions, rooms, 'Bulk Rotate (+45°)');
+    showToast(`Rotated ${symIds.size + colIds.size} selected element(s)`);
   };
 
   const handleAddWall = (newWall: WallSegment) => {
     const nextWalls = [...walls, newWall];
     setWalls(nextWalls);
-    setSelectedElement({ type: 'wall', id: newWall.id });
+    setSelectedItems([{ type: 'wall', id: newWall.id }]);
     pushToHistory(nextWalls, openings, columns, symbols, dimensions, rooms, 'Add Wall');
     showToast('Wall segment added & merged');
   };
@@ -252,7 +364,7 @@ export default function App() {
   const handleAddColumn = (newCol: ColumnElement) => {
     const nextCols = [...columns, newCol];
     setColumns(nextCols);
-    setSelectedElement({ type: 'column', id: newCol.id });
+    setSelectedItems([{ type: 'column', id: newCol.id }]);
     pushToHistory(walls, openings, nextCols, symbols, dimensions, rooms, `Add Column ${newCol.label}`);
     showToast(`Placed Column ${newCol.label}`);
   };
@@ -267,7 +379,7 @@ export default function App() {
   const handleAddSymbol = (newSym: PlacedSymbol) => {
     const nextSyms = [...symbols, newSym];
     setSymbols(nextSyms);
-    setSelectedElement({ type: 'symbol', id: newSym.id });
+    setSelectedItems([{ type: 'symbol', id: newSym.id }]);
     pushToHistory(walls, openings, columns, nextSyms, dimensions, rooms, `Add ${newSym.name}`);
     showToast(`Placed ${newSym.name}`);
   };
@@ -275,7 +387,7 @@ export default function App() {
   const handleAddDimension = (newDim: DimensionLine) => {
     const nextDims = [...dimensions, newDim];
     setDimensions(nextDims);
-    setSelectedElement({ type: 'dimension', id: newDim.id });
+    setSelectedItems([{ type: 'dimension', id: newDim.id }]);
     pushToHistory(walls, openings, columns, symbols, nextDims, rooms, 'Add Dimension');
     showToast('Dimension line added');
   };
@@ -296,7 +408,7 @@ export default function App() {
       };
       const nextCols = [...columns, newCol];
       setColumns(nextCols);
-      setSelectedElement({ type: 'column', id: newCol.id });
+      setSelectedItems([{ type: 'column', id: newCol.id }]);
       pushToHistory(walls, openings, nextCols, symbols, dimensions, rooms, `Add Column ${newCol.label}`);
       showToast(`Placed Column ${newCol.label}`);
     } else {
@@ -314,7 +426,7 @@ export default function App() {
       };
       const nextSyms = [...symbols, newSym];
       setSymbols(nextSyms);
-      setSelectedElement({ type: 'symbol', id: newSym.id });
+      setSelectedItems([{ type: 'symbol', id: newSym.id }]);
       pushToHistory(walls, openings, columns, nextSyms, dimensions, rooms, `Add ${newSym.name}`);
       showToast(`Placed ${newSym.name}`);
     }
@@ -358,110 +470,125 @@ export default function App() {
     showToast(actionName);
   };
 
+  // Bulk / Single Deletion Handler
   const handleDeleteSelected = useCallback(() => {
-    if (!selectedElement) return;
-    let deletedName = 'Item';
+    if (selectedItems.length === 0) return;
 
-    let nextWalls = walls;
-    let nextOpenings = openings;
-    let nextCols = columns;
-    let nextSyms = symbols;
-    let nextDims = dimensions;
+    const wallIds = new Set(selectedItems.filter((i) => i.type === 'wall').map((i) => i.id));
+    const colIds = new Set(selectedItems.filter((i) => i.type === 'column').map((i) => i.id));
+    const symIds = new Set(selectedItems.filter((i) => i.type === 'symbol').map((i) => i.id));
+    const dimIds = new Set(selectedItems.filter((i) => i.type === 'dimension').map((i) => i.id));
 
-    if (selectedElement.type === 'wall') {
-      deletedName = 'Wall Segment';
-      nextWalls = walls.filter((w) => w.id !== selectedElement.id);
-      nextOpenings = openings.filter((op) => op.wallId !== selectedElement.id);
-      setWalls(nextWalls);
-      setOpenings(nextOpenings);
-    } else if (selectedElement.type === 'column') {
-      const target = columns.find((c) => c.id === selectedElement.id);
-      deletedName = target ? `Column ${target.label}` : 'Column';
-      nextCols = columns.filter((c) => c.id !== selectedElement.id);
-      setColumns(nextCols);
-    } else if (selectedElement.type === 'symbol') {
-      const target = symbols.find((s) => s.id === selectedElement.id);
-      deletedName = target ? target.name : 'Symbol';
-      nextSyms = symbols.filter((s) => s.id !== selectedElement.id);
-      setSymbols(nextSyms);
-    } else if (selectedElement.type === 'dimension') {
-      deletedName = 'Dimension Line';
-      nextDims = dimensions.filter((d) => d.id !== selectedElement.id);
-      setDimensions(nextDims);
-    }
+    const nextWalls = walls.filter((w) => !wallIds.has(w.id));
+    const nextOpenings = openings.filter((op) => !wallIds.has(op.wallId));
+    const nextCols = columns.filter((c) => !colIds.has(c.id));
+    const nextSyms = symbols.filter((s) => !symIds.has(s.id));
+    const nextDims = dimensions.filter((d) => !dimIds.has(d.id));
 
-    pushToHistory(nextWalls, nextOpenings, nextCols, nextSyms, nextDims, rooms, `Delete ${deletedName}`);
-    showToast(`Deleted ${deletedName}`);
-    setSelectedElement(null);
-  }, [selectedElement, walls, openings, columns, symbols, dimensions, rooms, pushToHistory, showToast]);
+    setWalls(nextWalls);
+    setOpenings(nextOpenings);
+    setColumns(nextCols);
+    setSymbols(nextSyms);
+    setDimensions(nextDims);
 
-  // Duplicate / Clone Selected Element
+    const count = selectedItems.length;
+    setSelectedItems([]);
+    pushToHistory(
+      nextWalls,
+      nextOpenings,
+      nextCols,
+      nextSyms,
+      nextDims,
+      rooms,
+      `Delete ${count} Element${count > 1 ? 's' : ''}`
+    );
+    showToast(`Deleted ${count} element${count > 1 ? 's' : ''}`);
+  }, [selectedItems, walls, openings, columns, symbols, dimensions, rooms, pushToHistory, showToast]);
+
+  // Bulk / Single Duplicate Handler
   const handleDuplicateSelected = useCallback(() => {
-    if (!selectedElement) return;
+    if (selectedItems.length === 0) return;
 
-    if (selectedElement.type === 'column') {
-      const col = columns.find((c) => c.id === selectedElement.id);
-      if (!col) return;
-      const newCol: ColumnElement = {
-        ...col,
-        id: `col_${Date.now()}`,
-        position: { x: col.position.x + 24, y: col.position.y + 24 },
-        label: `${col.label}-COPY`,
-      };
-      const nextCols = [...columns, newCol];
-      setColumns(nextCols);
-      setSelectedElement({ type: 'column', id: newCol.id });
-      pushToHistory(walls, openings, nextCols, symbols, dimensions, rooms, `Duplicate Column ${col.label}`);
-      showToast(`Duplicated ${col.label}`);
-    } else if (selectedElement.type === 'symbol') {
-      const sym = symbols.find((s) => s.id === selectedElement.id);
-      if (!sym) return;
-      const newSym: PlacedSymbol = {
-        ...sym,
-        id: `sym_${Date.now()}`,
-        position: { x: sym.position.x + 24, y: sym.position.y + 24 },
-        name: `${sym.name} (Copy)`,
-      };
-      const nextSyms = [...symbols, newSym];
-      setSymbols(nextSyms);
-      setSelectedElement({ type: 'symbol', id: newSym.id });
-      pushToHistory(walls, openings, columns, nextSyms, dimensions, rooms, `Duplicate ${sym.name}`);
-      showToast(`Duplicated ${sym.name}`);
-    } else if (selectedElement.type === 'wall') {
-      const w = walls.find((item) => item.id === selectedElement.id);
-      if (!w) return;
-      const newWall: WallSegment = {
-        ...w,
-        id: `wall_${Date.now()}`,
-        start: { x: w.start.x + 24, y: w.start.y + 24 },
-        end: { x: w.end.x + 24, y: w.end.y + 24 },
-      };
-      const nextWalls = [...walls, newWall];
-      setWalls(nextWalls);
-      setSelectedElement({ type: 'wall', id: newWall.id });
-      pushToHistory(nextWalls, openings, columns, symbols, dimensions, rooms, 'Duplicate Wall');
-      showToast('Duplicated Wall segment');
-    }
-  }, [selectedElement, columns, symbols, walls, openings, dimensions, rooms, pushToHistory, showToast]);
+    const newSelected: SelectedItem[] = [];
+    const nextWalls = [...walls];
+    const nextCols = [...columns];
+    const nextSyms = [...symbols];
+    const nextDims = [...dimensions];
 
-  // Rotate Selected Element by 45°
+    selectedItems.forEach((item) => {
+      if (item.type === 'wall') {
+        const w = walls.find((x) => x.id === item.id);
+        if (w) {
+          const newW: WallSegment = {
+            ...w,
+            id: `wall_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+            start: { x: w.start.x + 24, y: w.start.y + 24 },
+            end: { x: w.end.x + 24, y: w.end.y + 24 },
+          };
+          nextWalls.push(newW);
+          newSelected.push({ type: 'wall', id: newW.id });
+        }
+      } else if (item.type === 'column') {
+        const col = columns.find((c) => c.id === item.id);
+        if (col) {
+          const newCol: ColumnElement = {
+            ...col,
+            id: `col_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+            position: { x: col.position.x + 24, y: col.position.y + 24 },
+            label: `${col.label}-COPY`,
+          };
+          nextCols.push(newCol);
+          newSelected.push({ type: 'column', id: newCol.id });
+        }
+      } else if (item.type === 'symbol') {
+        const sym = symbols.find((s) => s.id === item.id);
+        if (sym) {
+          const newSym: PlacedSymbol = {
+            ...sym,
+            id: `sym_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+            position: { x: sym.position.x + 24, y: sym.position.y + 24 },
+            name: `${sym.name} (Copy)`,
+          };
+          nextSyms.push(newSym);
+          newSelected.push({ type: 'symbol', id: newSym.id });
+        }
+      } else if (item.type === 'dimension') {
+        const d = dimensions.find((x) => x.id === item.id);
+        if (d) {
+          const newDim: DimensionLine = {
+            ...d,
+            id: `dim_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+            start: { x: d.start.x + 24, y: d.start.y + 24 },
+            end: { x: d.end.x + 24, y: d.end.y + 24 },
+          };
+          nextDims.push(newDim);
+          newSelected.push({ type: 'dimension', id: newDim.id });
+        }
+      }
+    });
+
+    setWalls(nextWalls);
+    setColumns(nextCols);
+    setSymbols(nextSyms);
+    setDimensions(nextDims);
+    setSelectedItems(newSelected);
+    pushToHistory(
+      nextWalls,
+      openings,
+      nextCols,
+      nextSyms,
+      nextDims,
+      rooms,
+      `Duplicate ${selectedItems.length} Element${selectedItems.length > 1 ? 's' : ''}`
+    );
+    showToast(`Duplicated ${selectedItems.length} element${selectedItems.length > 1 ? 's' : ''}`);
+  }, [selectedItems, walls, openings, columns, symbols, dimensions, rooms, pushToHistory, showToast]);
+
+  // Rotate Selected Element(s) by 45°
   const handleRotateSelected = useCallback(() => {
-    if (!selectedElement) return;
-
-    if (selectedElement.type === 'symbol') {
-      const sym = symbols.find((s) => s.id === selectedElement.id);
-      if (!sym) return;
-      const updated: PlacedSymbol = { ...sym, rotation: (sym.rotation + 45) % 360 };
-      handleUpdateSymbol(updated);
-      showToast(`Rotated ${sym.name} to ${updated.rotation}°`);
-    } else if (selectedElement.type === 'column') {
-      const col = columns.find((c) => c.id === selectedElement.id);
-      if (!col) return;
-      const updated: ColumnElement = { ...col, rotation: (col.rotation + 45) % 360 };
-      handleUpdateColumn(updated);
-      showToast(`Rotated Column ${col.label} to ${updated.rotation}°`);
-    }
-  }, [selectedElement, symbols, columns, showToast]);
+    if (selectedItems.length === 0) return;
+    handleBulkRotateSelected();
+  }, [selectedItems, handleBulkRotateSelected]);
 
   // Cancel active drawing or deselect
   const handleCancelActiveDrawing = useCallback(
@@ -492,7 +619,7 @@ export default function App() {
     setSymbols(freshSample.symbols);
     setDimensions(freshSample.dimensions);
     setRooms(freshSample.rooms);
-    setSelectedElement({ type: 'wall', id: freshSample.walls[0].id });
+    setSelectedItems([{ type: 'wall', id: freshSample.walls[0].id }]);
     pushToHistory(
       freshSample.walls,
       freshSample.openings,
@@ -512,7 +639,7 @@ export default function App() {
     setSymbols([]);
     setDimensions([]);
     setRooms([]);
-    setSelectedElement(null);
+    setSelectedItems([]);
     pushToHistory([], [], [], [], [], [], 'Clear Canvas');
     showToast('Cleared canvas (New Blank Drawing)');
   };
@@ -558,45 +685,52 @@ export default function App() {
     showToast('Blueprint saved to JSON project file');
   };
 
-  const handleOpenFilePicker = () => {
+  const handleOpenFilePicker = useCallback(() => {
     fileInputRef.current?.click();
-  };
+  }, []);
+
+  const handleOpenFileDrop = useCallback(
+    (file: File) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const parsed: SavedProjectFile = JSON.parse(event.target?.result as string);
+          if (parsed.drawing) {
+            const d = parsed.drawing;
+            setWalls(d.walls || []);
+            setOpenings(d.openings || []);
+            setColumns(d.columns || []);
+            setSymbols(d.symbols || []);
+            setDimensions(d.dimensions || []);
+            setRooms(d.rooms || []);
+            if (parsed.projectInfo) setProjectInfo(parsed.projectInfo);
+            if (parsed.layers) setLayers(parsed.layers);
+            setSelectedItems([]);
+            pushToHistory(
+              d.walls || [],
+              d.openings || [],
+              d.columns || [],
+              d.symbols || [],
+              d.dimensions || [],
+              d.rooms || [],
+              `Open File: ${file.name}`
+            );
+            showToast(`Loaded blueprint: ${file.name}`);
+          }
+        } catch (err) {
+          console.error('Error importing project:', err);
+          showToast('Invalid JSON blueprint file');
+        }
+      };
+      reader.readAsText(file);
+    },
+    [pushToHistory, showToast]
+  );
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const parsed: SavedProjectFile = JSON.parse(event.target?.result as string);
-        if (parsed.drawing) {
-          const d = parsed.drawing;
-          setWalls(d.walls || []);
-          setOpenings(d.openings || []);
-          setColumns(d.columns || []);
-          setSymbols(d.symbols || []);
-          setDimensions(d.dimensions || []);
-          setRooms(d.rooms || []);
-          if (parsed.projectInfo) setProjectInfo(parsed.projectInfo);
-          if (parsed.layers) setLayers(parsed.layers);
-          pushToHistory(
-            d.walls || [],
-            d.openings || [],
-            d.columns || [],
-            d.symbols || [],
-            d.dimensions || [],
-            d.rooms || [],
-            `Import: ${file.name}`
-          );
-          showToast(`Loaded project: ${file.name}`);
-        }
-      } catch (err) {
-        console.error('Error importing project:', err);
-        showToast('Invalid project file format');
-      }
-    };
-    reader.readAsText(file);
+    handleOpenFileDrop(file);
     // Reset file input value so re-selecting same file triggers change
     e.target.value = '';
   };
@@ -651,11 +785,27 @@ export default function App() {
         return;
       }
 
+      // Open: Ctrl+O / Cmd+O
+      if (cmdOrCtrl && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        handleOpenFilePicker();
+        return;
+      }
+
       // Duplicate: Ctrl+D / Cmd+D
       if (cmdOrCtrl && e.key.toLowerCase() === 'd') {
         e.preventDefault();
         handleDuplicateSelected();
         return;
+      }
+
+      // Group: Ctrl+G / Cmd+G or G
+      if ((cmdOrCtrl && e.key.toLowerCase() === 'g') || (!cmdOrCtrl && e.key.toLowerCase() === 'g')) {
+        if (selectedItems.length > 1) {
+          e.preventDefault();
+          handleGroupSelected();
+          return;
+        }
       }
 
       // Delete: Delete or Backspace
@@ -665,8 +815,8 @@ export default function App() {
         return;
       }
 
-      // Rotate: R key when item selected
-      if (e.key.toLowerCase() === 'r' && selectedElement) {
+      // Rotate: R key when items selected
+      if (e.key.toLowerCase() === 'r' && selectedItems.length > 0) {
         e.preventDefault();
         handleRotateSelected();
         return;
@@ -675,6 +825,7 @@ export default function App() {
       // Tool switching shortcuts
       if (!cmdOrCtrl && !e.altKey) {
         if (e.key.toLowerCase() === 'v') setActiveTool('select');
+        if (e.key.toLowerCase() === 'b') setActiveTool('box-select');
         if (e.key.toLowerCase() === 'w') setActiveTool('wall');
         if (e.key.toLowerCase() === 'c') setActiveTool('column');
         if (e.key.toLowerCase() === 'd') setActiveTool('door');
@@ -692,7 +843,9 @@ export default function App() {
     handleDeleteSelected,
     handleDuplicateSelected,
     handleRotateSelected,
-    selectedElement,
+    handleGroupSelected,
+    handleOpenFilePicker,
+    selectedItems,
   ]);
 
   return (
@@ -752,9 +905,10 @@ export default function App() {
           activeTool={activeTool}
           wallThickness={wallThickness}
           snapSettings={snapSettings}
-          selectedId={selectedElement?.id || null}
+          selectedItems={selectedItems}
           selectedLabel={selectedElementLabel}
           onSelectElement={handleSelectElement}
+          onBoxSelectElements={handleBoxSelectElements}
           onAddWall={handleAddWall}
           onAddColumn={handleAddColumn}
           onAddOpening={handleAddOpening}
@@ -768,6 +922,8 @@ export default function App() {
           onDuplicateSelected={handleDuplicateSelected}
           onRotateSelected={handleRotateSelected}
           onDeleteSelected={handleDeleteSelected}
+          onGroupSelected={handleGroupSelected}
+          onOpenFileDrop={handleOpenFileDrop}
           zoom={zoom}
           onZoomChange={setZoom}
         />
@@ -775,6 +931,11 @@ export default function App() {
         {/* Docked Right Inspector & Layer Manager */}
         <CADInspector
           selectedElement={currentSelectedData}
+          selectedCount={selectedCount}
+          selectedBreakdown={selectedBreakdown}
+          onBulkUpdateWallThickness={handleBulkUpdateWallThickness}
+          onBulkRotateSelected={handleBulkRotateSelected}
+          onGroupSelected={handleGroupSelected}
           onUpdateWall={handleUpdateWall}
           onUpdateColumn={handleUpdateColumn}
           onUpdateSymbol={handleUpdateSymbol}

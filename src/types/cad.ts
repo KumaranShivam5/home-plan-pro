@@ -91,6 +91,7 @@ export interface CADLayer {
 
 export type CADTool =
   | 'select'
+  | 'box-select'
   | 'wall'
   | 'column'
   | 'door'
@@ -100,6 +101,17 @@ export type CADTool =
   | 'text'
   | 'delete'
   | 'pan';
+
+export interface SelectedItem {
+  type: 'wall' | 'column' | 'symbol' | 'dimension';
+  id: string;
+}
+
+export interface CADGroup {
+  id: string;
+  name: string;
+  elementIds: string[];
+}
 
 export interface SnapSettings {
   snapToGrid: boolean;

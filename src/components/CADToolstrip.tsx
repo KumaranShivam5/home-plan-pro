@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   MousePointer,
+  BoxSelect,
   Square,
   Columns,
   DoorOpen,
@@ -27,7 +28,8 @@ export const CADToolstrip: React.FC<CADToolstripProps> = ({
   onToggleSymbolPalette,
 }) => {
   const tools: { id: CADTool; label: string; shortcut: string; icon: React.ComponentType<{ className?: string }> }[] = [
-    { id: 'select', label: 'Select & Move', shortcut: 'V', icon: MousePointer },
+    { id: 'select', label: 'Select & Move (Click or Shift+Click)', shortcut: 'V', icon: MousePointer },
+    { id: 'box-select', label: 'Box Select (Marquee Area)', shortcut: 'B', icon: BoxSelect },
     { id: 'wall', label: 'Continuous Wall (Auto-Merge)', shortcut: 'W', icon: Square },
     { id: 'column', label: 'Structural Column / Pillar', shortcut: 'C', icon: Columns },
     { id: 'door', label: 'Snapping Door Opening', shortcut: 'D', icon: DoorOpen },
