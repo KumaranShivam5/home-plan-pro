@@ -1,0 +1,6 @@
+{
+  "name": "Home Plan Pro Web CAD",
+  "description": "Professional 2D architectural CAD workstation for drafting official floor plans, engineering drawings, and vector PDF blueprints.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
