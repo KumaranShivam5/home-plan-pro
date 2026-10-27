@@ -55,6 +55,7 @@ interface CADCanvasProps {
   onOpenFileDrop?: (file: File) => void;
   zoom: number;
   onZoomChange: (zoom: number) => void;
+  cancelSignal?: number;
 }
 
 export const CADCanvas: React.FC<CADCanvasProps> = ({
@@ -88,6 +89,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
   onOpenFileDrop,
   zoom,
   onZoomChange,
+  cancelSignal,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -560,28 +562,62 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
     };
   }, []);
 
+  // Reset active drawing if cancelSignal changes or active tool reverts to select/pan
+  useEffect(() => {
+    setWallStartPoint(null);
+    setDimensionStartPoint(null);
+    setBoxSelectBox(null);
+    setDraggingItem(null);
+  }, [cancelSignal]);
+
+  useEffect(() => {
+    if (activeTool === 'select' || activeTool === 'pan') {
+      setWallStartPoint(null);
+      setDimensionStartPoint(null);
+    }
+  }, [activeTool]);
+
   // Keyboard shortcut handler (Escape, Enter, or Space to stop active wall / cancel drawing)
+  // Uses capture phase to intercept Escape before Android / browser default back navigation triggers
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' || e.key === 'Enter' || (e.key === ' ' && (wallStartPoint || dimensionStartPoint))) {
+      const isEscape = e.key === 'Escape' || e.code === 'Escape' || e.keyCode === 27;
+
+      if (isEscape || e.key === 'Enter' || (e.key === ' ' && (wallStartPoint || dimensionStartPoint))) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation?.();
+
         if (wallStartPoint) {
-          e.preventDefault();
           setWallStartPoint(null);
           onCancelActiveDrawing?.('Finished / Stopped active wall');
         } else if (dimensionStartPoint) {
-          e.preventDefault();
           setDimensionStartPoint(null);
           onCancelActiveDrawing?.('Cancelled dimension line');
-        } else if (selectedItems.length > 0 && e.key === 'Escape') {
+        } else if (selectedItems.length > 0 && isEscape) {
           onSelectElement(null, false);
           onCancelActiveDrawing?.('Deselected');
-        } else if (e.key === 'Escape') {
+        } else if (isEscape) {
           onCancelActiveDrawing?.('Active tool reset to select');
         }
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || e.code === 'Escape' || e.keyCode === 27) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation?.();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, { capture: true });
+    window.addEventListener('keyup', handleKeyUp, { capture: true });
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, { capture: true });
+      window.removeEventListener('keyup', handleKeyUp, { capture: true });
+    };
   }, [wallStartPoint, dimensionStartPoint, selectedItems, onCancelActiveDrawing, onSelectElement]);
 
   // HTML5 Drag and Drop from Left Symbol Palette & Project File Drops
@@ -677,15 +713,15 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
       }}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
-      className="flex-1 h-full w-full bg-[#0B0F19] relative overflow-hidden cursor-crosshair-cad select-none"
+      className="flex-1 h-full w-full bg-[#FFFFFF] relative overflow-hidden cursor-crosshair-cad select-none"
     >
       {/* Visual Active Wall Guidance Banner with Direct Stop Button */}
       {wallStartPoint && (
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-[#111827] border border-sky-500 rounded-full px-4 py-1.5 flex items-center gap-3 shadow-2xl z-30 select-none animate-in fade-in slide-in-from-top-2">
-          <div className="flex items-center gap-2 text-xs text-slate-200">
-            <span className="w-2.5 h-2.5 rounded-full bg-sky-400 animate-pulse" />
-            <span className="font-semibold text-sky-300">Wall in Progress:</span>
-            <span className="text-slate-300">Click endpoint to place · Right-click or Esc to finish</span>
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-[#F4EFEA] border border-[#DFD3C7] rounded-full px-4 py-1.5 flex items-center gap-3 shadow-md z-30 select-none animate-in fade-in slide-in-from-top-2">
+          <div className="flex items-center gap-2 text-xs text-[#2B231F]">
+            <span className="w-2.5 h-2.5 rounded-full bg-[#C85A32] animate-pulse" />
+            <span className="font-semibold text-[#C85A32]">Wall in Progress:</span>
+            <span className="text-[#5C4D43]">Click endpoint to place · Right-click or Esc to finish</span>
           </div>
           <button
             type="button"
@@ -694,7 +730,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
               setWallStartPoint(null);
               onCancelActiveDrawing?.('Stopped wall drawing');
             }}
-            className="flex items-center gap-1 px-2.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-rose-300 border border-slate-700 rounded-full text-xs font-semibold transition-colors cursor-pointer"
+            className="flex items-center gap-1 px-2.5 py-0.5 bg-[#C85A32] hover:bg-[#B64F2A] text-white rounded-full text-xs font-semibold transition-colors cursor-pointer"
             title="Stop / Finish Wall Drawing (Esc)"
           >
             <X className="w-3.5 h-3.5" />
@@ -714,11 +750,11 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
             patternTransform={`translate(${pan.x % (12 * zoom)}, ${pan.y % (12 * zoom)})`}
           >
             {/* Grid Dots */}
-            <circle cx="0" cy="0" r="1" fill="#334155" />
+            <circle cx="0" cy="0" r="0.8" fill="#D4D4D4" />
             <path
               d={`M ${12 * zoom} 0 L 0 0 0 ${12 * zoom}`}
               fill="none"
-              stroke="#1E293B"
+              stroke="#EAEAEA"
               strokeWidth="0.5"
             />
           </pattern>
@@ -735,8 +771,8 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
             <path
               d={`M ${60 * zoom} 0 L 0 0 0 ${60 * zoom}`}
               fill="none"
-              stroke="#2A374A"
-              strokeWidth="1"
+              stroke="#D4D4D4"
+              strokeWidth="0.8"
             />
           </pattern>
         </defs>
@@ -746,10 +782,10 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
 
         {/* 2. World Coordinate Origin Marker (0,0) */}
         <g transform={`translate(${pan.x}, ${pan.y})`}>
-          <line x1="-15" y1="0" x2="15" y2="0" stroke="#38BDF8" strokeWidth="1.5" />
-          <line x1="0" y1="-15" x2="0" y2="15" stroke="#38BDF8" strokeWidth="1.5" />
-          <circle cx="0" cy="0" r="3" fill="#38BDF8" />
-          <text x="6" y="-6" fill="#38BDF8" fontSize="10" fontFamily="monospace">
+          <line x1="-15" y1="0" x2="15" y2="0" stroke="#000000" strokeWidth="1.2" />
+          <line x1="0" y1="-15" x2="0" y2="15" stroke="#000000" strokeWidth="1.2" />
+          <circle cx="0" cy="0" r="2.5" fill="#000000" />
+          <text x="6" y="-6" fill="#000000" fontSize="10" fontWeight="600" fontFamily="monospace">
             (0,0)
           </text>
         </g>
@@ -770,14 +806,14 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
 
             return (
               <g key={room.id}>
-                <polygon points={pointsStr} fill="#0284C7" fillOpacity="0.08" stroke="none" />
+                <polygon points={pointsStr} fill="#000000" fillOpacity="0.03" stroke="#D4D4D4" strokeWidth="0.8" strokeDasharray="4 2" />
                 <text
                   x={cx}
                   y={cy - 4}
                   textAnchor="middle"
-                  fill="#94A3B8"
+                  fill="#000000"
                   fontSize="12"
-                  fontWeight="600"
+                  fontWeight="700"
                   fontFamily="sans-serif"
                 >
                   {room.name.toUpperCase()}
@@ -786,8 +822,9 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                   x={cx}
                   y={cy + 10}
                   textAnchor="middle"
-                  fill="#64748B"
+                  fill="#555555"
                   fontSize="10"
+                  fontWeight="600"
                   fontFamily="monospace"
                 >
                   {room.areaSqFt} SQ FT
@@ -806,9 +843,9 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                 {/* Wall Solid Cavity */}
                 <polygon
                   points={pts}
-                  fill="#1E293B"
-                  stroke={isSelected ? '#38BDF8' : '#94A3B8'}
-                  strokeWidth={isSelected ? '2' : '1.2'}
+                  fill="#000000"
+                  stroke={isSelected ? '#C85A32' : '#000000'}
+                  strokeWidth={isSelected ? '2.5' : '1.2'}
                   strokeLinejoin="round"
                 />
 
@@ -818,24 +855,36 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                   y1={wp.centerline.start.y}
                   x2={wp.centerline.end.x}
                   y2={wp.centerline.end.y}
-                  stroke={isSelected ? '#38BDF8' : '#475569'}
+                  stroke={isSelected ? '#C85A32' : '#666666'}
                   strokeWidth="0.6"
                   strokeDasharray="4 2"
                 />
 
                 {/* Wall dimension readout on hover/select */}
                 {isSelected && (
-                  <text
-                    x={(wp.centerline.start.x + wp.centerline.end.x) / 2}
-                    y={(wp.centerline.start.y + wp.centerline.end.y) / 2 - 8}
-                    textAnchor="middle"
-                    fill="#38BDF8"
-                    fontSize="10"
-                    fontWeight="600"
-                    fontFamily="monospace"
-                  >
-                    {formatImperial(distance(wp.centerline.start, wp.centerline.end))} ({wp.thickness}")
-                  </text>
+                  <g>
+                    <rect
+                      x={(wp.centerline.start.x + wp.centerline.end.x) / 2 - 42}
+                      y={(wp.centerline.start.y + wp.centerline.end.y) / 2 - 20}
+                      width="84"
+                      height="16"
+                      rx="3"
+                      fill="#FFFFFF"
+                      stroke="#C85A32"
+                      strokeWidth="1"
+                    />
+                    <text
+                      x={(wp.centerline.start.x + wp.centerline.end.x) / 2}
+                      y={(wp.centerline.start.y + wp.centerline.end.y) / 2 - 8}
+                      textAnchor="middle"
+                      fill="#C85A32"
+                      fontSize="10"
+                      fontWeight="700"
+                      fontFamily="monospace"
+                    >
+                      {formatImperial(distance(wp.centerline.start, wp.centerline.end))} ({wp.thickness}")
+                    </text>
+                  </g>
                 )}
               </g>
             );
@@ -867,13 +916,13 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
 
             return (
               <g key={op.id}>
-                {/* Wall Opening Cutout (clears the wall cavity) */}
+                {/* Wall Opening Cutout (clears the wall cavity on pure white canvas) */}
                 <rect
                   x={centerPos.x - (op.width / 2) * Math.abs(ux) - (parentWall.thickness / 2 + 1) * Math.abs(nx)}
                   y={centerPos.y - (op.width / 2) * Math.abs(uy) - (parentWall.thickness / 2 + 1) * Math.abs(ny)}
                   width={Math.max(op.width * Math.abs(ux), (parentWall.thickness + 2) * Math.abs(nx))}
                   height={Math.max(op.width * Math.abs(uy), (parentWall.thickness + 2) * Math.abs(ny))}
-                  fill="#0B0F19"
+                  fill="#FFFFFF"
                 />
 
                 {op.type === 'door' || op.type === 'pocket-door' ? (
@@ -884,16 +933,16 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                       y1={pStart.y + ny * (parentWall.thickness / 2)}
                       x2={pStart.x - nx * (parentWall.thickness / 2)}
                       y2={pStart.y - ny * (parentWall.thickness / 2)}
-                      stroke="#CBD5E1"
-                      strokeWidth="1.5"
+                      stroke="#000000"
+                      strokeWidth="1.8"
                     />
                     <line
                       x1={pEnd.x + nx * (parentWall.thickness / 2)}
                       y1={pEnd.y + ny * (parentWall.thickness / 2)}
                       x2={pEnd.x - nx * (parentWall.thickness / 2)}
                       y2={pEnd.y - ny * (parentWall.thickness / 2)}
-                      stroke="#CBD5E1"
-                      strokeWidth="1.5"
+                      stroke="#000000"
+                      strokeWidth="1.8"
                     />
 
                     {/* Swing Leaf Line */}
@@ -902,7 +951,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                       y1={pStart.y}
                       x2={pStart.x + nx * op.width}
                       y2={pStart.y + ny * op.width}
-                      stroke="#38BDF8"
+                      stroke="#000000"
                       strokeWidth="1.5"
                     />
 
@@ -910,7 +959,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                     <path
                       d={`M ${pStart.x + nx * op.width} ${pStart.y + ny * op.width} A ${op.width} ${op.width} 0 0 1 ${pEnd.x} ${pEnd.y}`}
                       fill="none"
-                      stroke="#38BDF8"
+                      stroke="#000000"
                       strokeWidth="1"
                       strokeDasharray="4 2"
                     />
@@ -918,13 +967,13 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                 ) : (
                   // Glazed Window
                   <g>
-                    <line x1={pStart.x} y1={pStart.y} x2={pEnd.x} y2={pEnd.y} stroke="#38BDF8" strokeWidth="2" />
+                    <line x1={pStart.x} y1={pStart.y} x2={pEnd.x} y2={pEnd.y} stroke="#000000" strokeWidth="2" />
                     <line
                       x1={pStart.x + nx * 2}
                       y1={pStart.y + ny * 2}
                       x2={pEnd.x + nx * 2}
                       y2={pEnd.y + ny * 2}
-                      stroke="#CBD5E1"
+                      stroke="#000000"
                       strokeWidth="1"
                     />
                     <line
@@ -932,7 +981,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                       y1={pStart.y - ny * 2}
                       x2={pEnd.x - nx * 2}
                       y2={pEnd.y - ny * 2}
-                      stroke="#CBD5E1"
+                      stroke="#000000"
                       strokeWidth="1"
                     />
                   </g>
@@ -955,9 +1004,9 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                     cx="0"
                     cy="0"
                     r={col.width / 2}
-                    fill="#1E293B"
-                    stroke={isSelected ? '#38BDF8' : '#F1F5F9'}
-                    strokeWidth={isSelected ? '2.5' : '1.8'}
+                    fill="#000000"
+                    stroke={isSelected ? '#C85A32' : '#000000'}
+                    strokeWidth={isSelected ? '2.5' : '1.5'}
                   />
                 ) : (
                   <rect
@@ -965,22 +1014,22 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                     y={-col.height / 2}
                     width={col.width}
                     height={col.height}
-                    fill="#1E293B"
-                    stroke={isSelected ? '#38BDF8' : '#F1F5F9'}
-                    strokeWidth={isSelected ? '2.5' : '1.8'}
+                    fill="#000000"
+                    stroke={isSelected ? '#C85A32' : '#000000'}
+                    strokeWidth={isSelected ? '2.5' : '1.5'}
                   />
                 )}
 
                 {/* Structural Hatching */}
                 {col.hatchPattern === 'cross' && (
-                  <g stroke="#94A3B8" strokeWidth="1">
+                  <g stroke="#FFFFFF" strokeWidth="1">
                     <line x1={-col.width / 2} y1={-col.height / 2} x2={col.width / 2} y2={col.height / 2} />
                     <line x1={col.width / 2} y1={-col.height / 2} x2={-col.width / 2} y2={col.height / 2} />
-                    <rect x={-col.width / 4} y={-col.height / 4} width={col.width / 2} height={col.height / 2} fill="#334155" stroke="none" />
+                    <rect x={-col.width / 4} y={-col.height / 4} width={col.width / 2} height={col.height / 2} fill="#000000" stroke="#FFFFFF" strokeWidth="0.8" />
                   </g>
                 )}
                 {col.hatchPattern === 'solid' && (
-                  <rect x={-col.width / 3} y={-col.height / 3} width={(col.width * 2) / 3} height={(col.height * 2) / 3} fill="#475569" />
+                  <rect x={-col.width / 3} y={-col.height / 3} width={(col.width * 2) / 3} height={(col.height * 2) / 3} fill="#FFFFFF" />
                 )}
 
                 {/* Column Center Grid Tag / Label */}
@@ -989,7 +1038,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                     x="0"
                     y={col.height / 2 + 10}
                     textAnchor="middle"
-                    fill={isSelected ? '#38BDF8' : '#F8FAFC'}
+                    fill={isSelected ? '#C85A32' : '#000000'}
                     fontSize="9"
                     fontWeight="700"
                     fontFamily="monospace"
@@ -1021,8 +1070,8 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                     y={-sym.height / 2}
                     width={sym.width}
                     height={sym.height}
-                    fill="#1E293B"
-                    stroke={isSelected ? '#38BDF8' : '#94A3B8'}
+                    fill="#FFFFFF"
+                    stroke={isSelected ? '#C85A32' : '#000000'}
                     strokeWidth="1.5"
                   />
                 )}
@@ -1034,9 +1083,9 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                       x="0"
                       y="0"
                       textAnchor="middle"
-                      fill={isSelected ? '#38BDF8' : '#94A3B8'}
+                      fill={isSelected ? '#C85A32' : '#000000'}
                       fontSize="9"
-                      fontWeight="600"
+                      fontWeight="700"
                       fontFamily="monospace"
                     >
                       {sym.name}
@@ -1063,7 +1112,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                   y1={dim.start.y}
                   x2={dim.end.x}
                   y2={dim.end.y}
-                  stroke={isSelected ? '#38BDF8' : '#0284C7'}
+                  stroke={isSelected ? '#C85A32' : '#000000'}
                   strokeWidth="1.2"
                 />
 
@@ -1073,30 +1122,42 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                   y1={dim.start.y + 4}
                   x2={dim.start.x + 4}
                   y2={dim.start.y - 4}
-                  stroke={isSelected ? '#38BDF8' : '#0284C7'}
-                  strokeWidth="1.8"
+                  stroke={isSelected ? '#C85A32' : '#000000'}
+                  strokeWidth="2"
                 />
                 <line
                   x1={dim.end.x - 4}
                   y1={dim.end.y + 4}
                   x2={dim.end.x + 4}
                   y2={dim.end.y - 4}
-                  stroke={isSelected ? '#38BDF8' : '#0284C7'}
-                  strokeWidth="1.8"
+                  stroke={isSelected ? '#C85A32' : '#000000'}
+                  strokeWidth="2"
                 />
 
                 {/* Dimension Text Badge */}
-                <text
-                  x={midX}
-                  y={midY - 6}
-                  textAnchor="middle"
-                  fill={isSelected ? '#38BDF8' : '#38BDF8'}
-                  fontSize="11"
-                  fontWeight="600"
-                  fontFamily="monospace"
-                >
-                  {text}
-                </text>
+                <g>
+                  <rect
+                    x={midX - Math.max(22, text.length * 4)}
+                    y={midY - 14}
+                    width={Math.max(44, text.length * 8)}
+                    height="14"
+                    rx="2"
+                    fill="#FFFFFF"
+                    stroke={isSelected ? '#C85A32' : '#000000'}
+                    strokeWidth="0.8"
+                  />
+                  <text
+                    x={midX}
+                    y={midY - 4}
+                    textAnchor="middle"
+                    fill={isSelected ? '#C85A32' : '#000000'}
+                    fontSize="10"
+                    fontWeight="700"
+                    fontFamily="monospace"
+                  >
+                    {text}
+                  </text>
+                </g>
               </g>
             );
           })}
@@ -1109,31 +1170,43 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                 y1={wallStartPoint.y}
                 x2={hoveredPoint.x}
                 y2={hoveredPoint.y}
-                stroke="#38BDF8"
+                stroke="#000000"
                 strokeWidth={wallThickness}
-                strokeOpacity="0.6"
+                strokeOpacity="0.35"
               />
               <line
                 x1={wallStartPoint.x}
                 y1={wallStartPoint.y}
                 x2={hoveredPoint.x}
                 y2={hoveredPoint.y}
-                stroke="#38BDF8"
+                stroke="#C85A32"
                 strokeWidth="1.5"
                 strokeDasharray="4 2"
               />
               {/* Length tooltip on active line */}
-              <text
-                x={(wallStartPoint.x + hoveredPoint.x) / 2}
-                y={(wallStartPoint.y + hoveredPoint.y) / 2 - 10}
-                textAnchor="middle"
-                fill="#38BDF8"
-                fontSize="11"
-                fontWeight="700"
-                fontFamily="monospace"
-              >
-                {formatImperial(distance(wallStartPoint, hoveredPoint))}
-              </text>
+              <g>
+                <rect
+                  x={(wallStartPoint.x + hoveredPoint.x) / 2 - 32}
+                  y={(wallStartPoint.y + hoveredPoint.y) / 2 - 20}
+                  width="64"
+                  height="16"
+                  rx="3"
+                  fill="#FFFFFF"
+                  stroke="#C85A32"
+                  strokeWidth="1"
+                />
+                <text
+                  x={(wallStartPoint.x + hoveredPoint.x) / 2}
+                  y={(wallStartPoint.y + hoveredPoint.y) / 2 - 8}
+                  textAnchor="middle"
+                  fill="#C85A32"
+                  fontSize="10"
+                  fontWeight="700"
+                  fontFamily="monospace"
+                >
+                  {formatImperial(distance(wallStartPoint, hoveredPoint))}
+                </text>
+              </g>
             </g>
           )}
 
@@ -1145,12 +1218,12 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                 y1={dimensionStartPoint.y}
                 x2={hoveredPoint.x}
                 y2={hoveredPoint.y}
-                stroke="#F59E0B"
+                stroke="#C85A32"
                 strokeWidth="1.2"
                 strokeDasharray="3 3"
               />
-              <circle cx={dimensionStartPoint.x} cy={dimensionStartPoint.y} r="3" fill="#F59E0B" />
-              <circle cx={hoveredPoint.x} cy={hoveredPoint.y} r="3" fill="#F59E0B" />
+              <circle cx={dimensionStartPoint.x} cy={dimensionStartPoint.y} r="3" fill="#C85A32" />
+              <circle cx={hoveredPoint.x} cy={hoveredPoint.y} r="3" fill="#C85A32" />
             </g>
           )}
 
@@ -1162,14 +1235,14 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
                 cy="0"
                 r="6"
                 fill="none"
-                stroke={snappedIndicator.type === 'vertex' ? '#10B981' : '#F59E0B'}
+                stroke="#C85A32"
                 strokeWidth="1.8"
               />
               <circle
                 cx="0"
                 cy="0"
                 r="2"
-                fill={snappedIndicator.type === 'vertex' ? '#10B981' : '#F59E0B'}
+                fill="#C85A32"
               />
             </g>
           )}
@@ -1180,9 +1253,9 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
               y={Math.min(boxSelectBox.start.y, boxSelectBox.current.y)}
               width={Math.abs(boxSelectBox.current.x - boxSelectBox.start.x)}
               height={Math.abs(boxSelectBox.current.y - boxSelectBox.start.y)}
-              fill="#38BDF8"
-              fillOpacity="0.12"
-              stroke="#38BDF8"
+              fill="#C85A32"
+              fillOpacity="0.08"
+              stroke="#C85A32"
               strokeWidth="1.2"
               strokeDasharray="4 2"
             />
@@ -1192,10 +1265,10 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
 
       {/* Floating Quick Action HUD Bar for Selected Element(s) */}
       {selectedItems.length > 0 && (
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#111827] border border-slate-700 rounded-lg px-3 py-1.5 flex items-center gap-2.5 shadow-2xl z-20 font-sans text-xs select-none animate-in fade-in slide-in-from-bottom-2">
-          <div className="flex items-center gap-1.5 text-slate-300 font-mono text-[11px] pr-2 border-r border-slate-800">
-            <span className="w-2 h-2 rounded-full bg-sky-400" />
-            <span className="font-semibold text-slate-100 max-w-[180px] truncate">
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#F4EFEA] border border-[#DFD3C7] rounded-lg px-3 py-1.5 flex items-center gap-2.5 shadow-xl z-20 font-sans text-xs select-none animate-in fade-in slide-in-from-bottom-2">
+          <div className="flex items-center gap-1.5 text-[#2B231F] font-mono text-[11px] pr-2 border-r border-[#DFD3C7]">
+            <span className="w-2 h-2 rounded-full bg-[#C85A32]" />
+            <span className="font-semibold text-[#2B231F] max-w-[180px] truncate">
               {selectedItems.length > 1
                 ? `${selectedItems.length} Elements Selected`
                 : selectedLabel || 'Selected Element'}
@@ -1206,10 +1279,10 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
             <button
               type="button"
               onClick={onGroupSelected}
-              className="flex items-center gap-1 text-slate-300 hover:text-white hover:bg-slate-800 px-2 py-1 rounded transition-colors cursor-pointer"
+              className="flex items-center gap-1 text-[#5C4D43] hover:text-[#C85A32] hover:bg-[#ECE3DB] px-2 py-1 rounded transition-colors cursor-pointer"
               title="Group Selected Elements (Ctrl+G)"
             >
-              <Boxes className="w-3.5 h-3.5 text-sky-400" />
+              <Boxes className="w-3.5 h-3.5 text-[#C85A32]" />
               <span>Group</span>
             </button>
           )}
@@ -1218,10 +1291,10 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
             <button
               type="button"
               onClick={onRotateSelected}
-              className="flex items-center gap-1 text-slate-300 hover:text-white hover:bg-slate-800 px-2 py-1 rounded transition-colors cursor-pointer"
+              className="flex items-center gap-1 text-[#5C4D43] hover:text-[#C85A32] hover:bg-[#ECE3DB] px-2 py-1 rounded transition-colors cursor-pointer"
               title="Rotate 45° (R)"
             >
-              <RotateCw className="w-3.5 h-3.5 text-sky-400" />
+              <RotateCw className="w-3.5 h-3.5 text-[#C85A32]" />
               <span>Rotate</span>
             </button>
           )}
@@ -1230,10 +1303,10 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
             <button
               type="button"
               onClick={onDuplicateSelected}
-              className="flex items-center gap-1 text-slate-300 hover:text-white hover:bg-slate-800 px-2 py-1 rounded transition-colors cursor-pointer"
+              className="flex items-center gap-1 text-[#5C4D43] hover:text-[#C85A32] hover:bg-[#ECE3DB] px-2 py-1 rounded transition-colors cursor-pointer"
               title="Duplicate / Clone (Ctrl+D)"
             >
-              <Copy className="w-3.5 h-3.5 text-amber-400" />
+              <Copy className="w-3.5 h-3.5 text-[#C85A32]" />
               <span>Clone</span>
             </button>
           )}
@@ -1242,7 +1315,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
             <button
               type="button"
               onClick={onDeleteSelected}
-              className="flex items-center gap-1 text-rose-400 hover:text-rose-300 hover:bg-slate-800 px-2 py-1 rounded transition-colors cursor-pointer"
+              className="flex items-center gap-1 text-rose-700 hover:text-rose-800 hover:bg-rose-50 px-2 py-1 rounded transition-colors cursor-pointer"
               title={selectedItems.length > 1 ? `Delete All (${selectedItems.length})` : 'Delete Element (Del)'}
             >
               <Trash2 className="w-3.5 h-3.5" />
@@ -1253,7 +1326,7 @@ export const CADCanvas: React.FC<CADCanvasProps> = ({
           <button
             type="button"
             onClick={() => onSelectElement(null, false)}
-            className="text-slate-400 hover:text-white p-1 hover:bg-slate-800 rounded transition-colors ml-1 cursor-pointer"
+            className="text-[#8C7C71] hover:text-[#2B231F] p-1 hover:bg-[#ECE3DB] rounded transition-colors ml-1 cursor-pointer"
             title="Deselect (Esc)"
           >
             <X className="w-3.5 h-3.5" />

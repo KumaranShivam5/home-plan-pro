@@ -6,6 +6,7 @@ import { CADCanvas } from './components/CADCanvas';
 import { CADInspector } from './components/CADInspector';
 import { CADOdometer } from './components/CADOdometer';
 import { PDFExportModal } from './components/PDFExportModal';
+import { X } from 'lucide-react';
 
 import {
   WallSegment,
@@ -60,6 +61,7 @@ export default function App() {
     },
   ]);
   const [historyIndex, setHistoryIndex] = useState<number>(0);
+  const [cancelSignal, setCancelSignal] = useState<number>(0);
 
   // Toast feedback state
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -590,10 +592,45 @@ export default function App() {
     handleBulkRotateSelected();
   }, [selectedItems, handleBulkRotateSelected]);
 
+  // Unified Escape & Cancellation Handler (called on Esc key, Android tablet back gesture, popstate, or on-screen Stop button)
+  const handleEscape = useCallback(() => {
+    // 1. If PDF export modal is open, close it
+    if (isPDFModalOpen) {
+      setIsPDFModalOpen(false);
+      showToast('Closed PDF Export (Esc)');
+      return;
+    }
+
+    // 2. Increment cancelSignal so CADCanvas cancels active wall/dimension drafting chain immediately
+    setCancelSignal((prev) => prev + 1);
+
+    // 3. If symbol palette is open, close it
+    if (isSymbolPaletteOpen) {
+      setIsSymbolPaletteOpen(false);
+    }
+
+    // 4. If an active tool is engaged (wall, box-select, dimension, column, door, window), revert to select tool
+    if (activeTool !== 'select') {
+      setActiveTool('select');
+      showToast('Canceled active tool (Esc)');
+      return;
+    }
+
+    // 5. If any elements are selected, clear selection
+    if (selectedItems.length > 0) {
+      setSelectedItems([]);
+      showToast('Cleared selection (Esc)');
+      return;
+    }
+
+    showToast('CAD Workstation Ready');
+  }, [isPDFModalOpen, isSymbolPaletteOpen, activeTool, selectedItems, showToast]);
+
   // Cancel active drawing or deselect
   const handleCancelActiveDrawing = useCallback(
     (msg: string) => {
       showToast(msg);
+      setCancelSignal((prev) => prev + 1);
       setActiveTool('select');
     },
     [showToast]
@@ -761,6 +798,15 @@ export default function App() {
       const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
       const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
 
+      // Escape: Stop active drawing, deselect, or close modal
+      if (e.key === 'Escape' || e.code === 'Escape' || e.keyCode === 27) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation?.();
+        handleEscape();
+        return;
+      }
+
       // Undo: Ctrl+Z / Cmd+Z (without shift)
       if (cmdOrCtrl && !e.shiftKey && e.key.toLowerCase() === 'z') {
         e.preventDefault();
@@ -838,6 +884,7 @@ export default function App() {
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, [
+    handleEscape,
     handleUndo,
     handleRedo,
     handleDeleteSelected,
@@ -847,6 +894,68 @@ export default function App() {
     handleOpenFilePicker,
     selectedItems,
   ]);
+
+  // Prevent Android tablets and mobile browsers from closing the app or PWA when pressing Escape or Back gesture
+  useEffect(() => {
+    // 1. Try to lock Escape key in Chromium / PWA if supported
+    if (
+      'keyboard' in navigator &&
+      typeof (navigator as unknown as { keyboard?: { lock?: (keys: string[]) => Promise<void> } }).keyboard?.lock === 'function'
+    ) {
+      try {
+        (navigator as unknown as { keyboard: { lock: (keys: string[]) => Promise<void> } }).keyboard.lock(['Escape']).catch(() => {});
+      } catch (_) {}
+    }
+
+    // 2. Setup History guard state to trap Android Back gestures / Esc navigation
+    try {
+      window.history.pushState({ cadGuard: true }, '', window.location.href);
+    } catch (_) {}
+
+    const handlePopState = () => {
+      // Re-push history entry immediately so subsequent Back actions never exit the app
+      try {
+        window.history.pushState({ cadGuard: true }, '', window.location.href);
+      } catch (_) {}
+      handleEscape();
+    };
+
+    // 3. Capture-phase KeyDown and KeyUp handler to intercept Escape before Android / browser default back navigation triggers
+    const handleCaptureKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || e.code === 'Escape' || e.keyCode === 27) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation?.();
+        handleEscape();
+      }
+    };
+
+    const handleCaptureKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' || e.code === 'Escape' || e.keyCode === 27) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation?.();
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    window.addEventListener('keydown', handleCaptureKeyDown, { capture: true });
+    window.addEventListener('keyup', handleCaptureKeyUp, { capture: true });
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('keydown', handleCaptureKeyDown, { capture: true });
+      window.removeEventListener('keyup', handleCaptureKeyUp, { capture: true });
+      if (
+        'keyboard' in navigator &&
+        typeof (navigator as unknown as { keyboard?: { unlock?: () => void } }).keyboard?.unlock === 'function'
+      ) {
+        try {
+          (navigator as unknown as { keyboard: { unlock: () => void } }).keyboard.unlock();
+        } catch (_) {}
+      }
+    };
+  }, [handleEscape]);
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#090D16] text-slate-100 select-none">
@@ -926,6 +1035,7 @@ export default function App() {
           onOpenFileDrop={handleOpenFileDrop}
           zoom={zoom}
           onZoomChange={setZoom}
+          cancelSignal={cancelSignal}
         />
 
         {/* Docked Right Inspector & Layer Manager */}
@@ -978,6 +1088,24 @@ export default function App() {
         <div className="absolute top-14 right-6 bg-[#111827] border border-slate-700/80 rounded-md px-3 py-1.5 text-xs text-sky-300 font-mono shadow-2xl z-50 animate-in fade-in slide-in-from-top-1">
           <span className="text-slate-400 mr-1.5">●</span>
           {toastMessage}
+        </div>
+      )}
+
+      {/* 6. Tablet & Mobile Floating Esc / Stop Action */}
+      {(activeTool !== 'select' || selectedItems.length > 0) && (
+        <div className="absolute bottom-11 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-[#111827] border border-slate-700/80 px-3 py-1.5 rounded-full shadow-2xl text-xs text-slate-200">
+          <span className="text-slate-400 font-mono text-[11px]">
+            {activeTool !== 'select' ? `Tool: ${activeTool.toUpperCase()}` : `${selectedItems.length} selected`}
+          </span>
+          <button
+            type="button"
+            onClick={handleEscape}
+            className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-800 hover:bg-slate-700 text-sky-400 hover:text-sky-300 font-medium text-[11px] border border-slate-600 transition-colors cursor-pointer"
+            title="Cancel active drawing or selection (Esc)"
+          >
+            <X className="w-3 h-3 text-sky-400" />
+            <span>Stop / Esc</span>
+          </button>
         </div>
       )}
     </div>

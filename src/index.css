@@ -20,18 +20,18 @@
   cursor: crosshair;
 }
 
-/* Custom crisp dark scrollbars for docked toolbars */
+/* Custom crisp warm scrollbars for docked toolbars */
 ::-webkit-scrollbar {
   width: 5px;
   height: 5px;
 }
 ::-webkit-scrollbar-track {
-  background: #0f172a;
+  background: #F4EFEA;
 }
 ::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: #DFD3C7;
   border-radius: 2px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: #C85A32;
 }

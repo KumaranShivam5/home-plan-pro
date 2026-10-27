@@ -11,6 +11,7 @@ import {
   FolderOpen,
 } from 'lucide-react';
 import { SnapSettings } from '../types/cad';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface CADTopNavProps {
   wallThickness: number;
@@ -201,15 +202,17 @@ export const CADTopNav: React.FC<CADTopNavProps> = ({
         </div>
       </nav>
 
-      {/* Zone 3: Primary action */}
+      {/* Zone 3: Primary action & PWA */}
       <div className="flex items-center gap-2 shrink-0">
+        <PWAInstallButton />
         <button
           type="button"
           onClick={onExportPDF}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-950 bg-sky-400 hover:bg-sky-300 rounded transition-colors whitespace-nowrap shadow-sm cursor-pointer"
         >
           <Download className="w-3.5 h-3.5" />
-          <span>Export Official PDF</span>
+          <span className="hidden md:inline">Export Official PDF</span>
+          <span className="md:hidden">Export PDF</span>
         </button>
       </div>
     </header>
